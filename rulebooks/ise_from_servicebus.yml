@@ -18,6 +18,6 @@
             msg:
               - "body(first 200)={{ (event.body | string)[:200] }}"
         - run_playbook:
-            name: playbooks/ise_change_state2.yml
+            name: playbooks/ise_change_state.yml
             extra_vars:
               raw_body: "{{ event.body }}"
