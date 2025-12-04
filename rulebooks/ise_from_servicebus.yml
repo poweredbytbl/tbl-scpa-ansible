@@ -1,0 +1,23 @@
+---
+- name: ISE NDG flip from Azure Service Bus
+  hosts: localhost
+
+  sources:
+    - ansible.eda.azure_service_bus:
+        # pull from env (injected via Key Vault/entrypoint or set locally)
+        conn_str: "{{ SERVICEBUS_CONN }}"
+        queue_name: "ise-queue"
+        
+  rules:
+    - name: log and process any event
+      condition: event.body is defined
+      actions:
+        - print_event:
+            pretty: true
+        - debug:
+            msg:
+              - "body(first 200)={{ (event.body | string)[:200] }}"
+        - run_playbook:
+            name: playbooks/ise_change_state2.yml
+            extra_vars:
+              raw_body: "{{ event.body }}"

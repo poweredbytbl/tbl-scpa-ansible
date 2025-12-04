@@ -1,0 +1,157 @@
+---
+- name: Flip ISE "Change State" NDG based on Service Bus event
+  hosts: localhost
+  gather_facts: false
+
+  collections:
+    - cisco.ise
+
+  # ISE connection via env (Key Vault → entrypoint already exports these)
+  vars:
+    ise_hostname: "{{ lookup('env','ISE_HOST') }}"
+    ise_username: "{{ lookup('env','ISE_USER') }}"
+    ise_password: "{{ lookup('env','ISE_PASS') }}"
+    ise_verify: "{{ (lookup('env','ISE_VERIFY') | default('false')) | bool }}"
+    ise_uses_api_gateway: "{{ (lookup('env','ISE_USE_GW') | default('true')) | bool }}"
+
+  tasks:
+    - name: DEBUG | show raw body snippet
+      ansible.builtin.debug:
+        msg:
+          - "raw_body type={{ raw_body | type_debug }}"
+          - "raw_body(first 400)={{ (raw_body | string)[:400] }}"
+
+    # Normalize to a dict
+    - name: Normalize payload (dict or JSON string)
+      block:
+        - ansible.builtin.set_fact:
+            payload: "{{ raw_body if (raw_body is mapping) else (raw_body | from_json) }}"
+      rescue:
+        - ansible.builtin.set_fact:
+            payload: "{{ raw_body | from_yaml }}"
+        - ansible.builtin.assert:
+            that: payload is mapping
+            fail_msg: "Event body is not parseable JSON/YAML mapping."
+
+    - name: Extract CID/state (supports both Salesforce and simple shapes)
+      vars:
+        # Salesforce: {"alerts":[{"Item":"CI-000004340","State":"Red"}]}
+        first_alert: "{{ (payload.alerts | default([])) | first | default({}) }}"
+        cid_from_alerts: "{{ first_alert.Item | default(omit) }}"
+        state_from_alerts: "{{ first_alert.State | default(omit) }}"
+      ansible.builtin.set_fact:
+        cid: >-
+          {{
+            payload.CID
+              | default(payload.cid, true)
+              | default(cid_from_alerts, true)
+          }}
+        target_state: >-
+          {{
+            (payload.state
+              | default(payload.State, true)
+              | default(state_from_alerts, true))
+            | lower
+          }}
+
+    - name: Validate inputs
+      ansible.builtin.assert:
+        that:
+          - cid is string
+          - target_state in ['red','green']
+        fail_msg: "Payload must include CID (string) and state in ['red','green']"
+      register: _validated
+
+    - name: Get one-page summary of devices
+      cisco.ise.network_device_info:
+        ise_hostname: "{{ ise_hostname }}"
+        ise_username: "{{ ise_username }}"
+        ise_password: "{{ ise_password }}"
+        ise_verify: "{{ ise_verify }}"
+        ise_uses_api_gateway: "{{ ise_uses_api_gateway }}"
+        page: 1
+        size: 50
+      register: summary
+
+    - name: Normalize summary → resources_list
+      ansible.builtin.set_fact:
+        resources_list: >-
+          {{
+            summary.ise_response.SearchResult.resources
+              if (summary.ise_response is mapping
+                  and summary.ise_response.SearchResult is defined
+                  and summary.ise_response.SearchResult.resources is defined)
+            else (summary.ise_response if summary.ise_response is sequence else [])
+          }}
+
+    - name: Select device (description == CID)
+      ansible.builtin.set_fact:
+        target_res: "{{ resources_list | selectattr('description','equalto', cid) | list }}"
+
+    - name: Assert exactly one match
+      ansible.builtin.assert:
+        that: target_res | length == 1
+        fail_msg: "Expected exactly 1 device with description='{{ cid }}', found {{ target_res|length }}"
+
+    - name: Extract device id
+      ansible.builtin.set_fact:
+        nd_id: "{{ (target_res | first).id }}"
+
+    - name: Fetch full device by id
+      cisco.ise.network_device_info:
+        ise_hostname: "{{ ise_hostname }}"
+        ise_username: "{{ ise_username }}"
+        ise_password: "{{ ise_password }}"
+        ise_verify: "{{ ise_verify }}"
+        ise_uses_api_gateway: "{{ ise_uses_api_gateway }}"
+        id: "{{ nd_id }}"
+      register: nd_full
+
+    - name: Current NDGs
+      ansible.builtin.set_fact:
+        current_groups: "{{ nd_full.ise_response.NetworkDeviceGroupList | default([]) | map('string') | list }}"
+        desired_entry: "Change State#Change State#{{ target_state }}"
+
+    - name: Compute new NDGs
+      ansible.builtin.set_fact:
+        already_desired: "{{ desired_entry in current_groups }}"
+        new_groups: >-
+          {{
+            (current_groups
+             | reject('match','^Change State#Change State(#.*)?$')
+             | list)
+            + [ desired_entry ]
+          }}
+
+    - name: DEBUG | decision
+      ansible.builtin.debug:
+        msg:
+          - "device={{ nd_full.ise_response.name }}"
+          - "cid={{ cid }}"
+          - "target_state={{ target_state }}"
+          - "already_desired={{ already_desired }}"
+          - "new_groups={{ new_groups }}"
+
+    - name: Update only if needed
+      cisco.ise.network_device:
+        ise_hostname: "{{ ise_hostname }}"
+        ise_username: "{{ ise_username }}"
+        ise_password: "{{ ise_password }}"
+        ise_verify: "{{ ise_verify }}"
+        ise_uses_api_gateway: "{{ ise_uses_api_gateway }}"
+        state: present
+        id: "{{ nd_full.ise_response.id }}"
+        name: "{{ nd_full.ise_response.name }}"
+        description: "{{ nd_full.ise_response.description }}"
+        profileName: "{{ nd_full.ise_response.profileName | default(omit) }}"
+        NetworkDeviceIPList: "{{ nd_full.ise_response.NetworkDeviceIPList | default(omit) }}"
+        NetworkDeviceGroupList: "{{ new_groups }}"
+      when: not already_desired
+      register: nd_update
+
+    - name: Result
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'No change (already ' ~ target_state ~ ').'
+             if already_desired else
+             'Updated Change State to ' ~ target_state }}
