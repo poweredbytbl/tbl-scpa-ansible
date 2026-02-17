@@ -13,6 +13,7 @@
     ise_password: "{{ lookup('env','ISE_PASS') }}"
     ise_verify: "{{ (lookup('env','ISE_VERIFY') | default('false')) | bool }}"
     ise_uses_api_gateway: "{{ (lookup('env','ISE_USE_GW') | default('true')) | bool }}"
+    webex_webhook_url: "{{ lookup('env','WEBEX_WEBHOOK_URL') }}"
 
   tasks:
     - name: DEBUG | show raw body snippet
@@ -155,3 +156,23 @@
           {{ 'No change (already ' ~ target_state ~ ').'
              if already_desired else
              'Updated Change State to ' ~ target_state }}
+
+    - name: Notify Webex space
+      ansible.builtin.uri:
+        url: "{{ webex_webhook_url }}"
+        method: POST
+        body_format: json
+        body:
+          markdown: >-
+            **ISE Change State Update**
+
+
+            - **Device:** {{ nd_full.ise_response.name }}
+
+            - **CID:** {{ cid }}
+
+            - **Change:** State set to **{{ target_state }}**
+        status_code: 204
+      when:
+        - not already_desired
+        - webex_webhook_url | length > 0
