@@ -52,15 +52,14 @@
             (payload.state
               | default(payload.State, true)
               | default(state_from_alerts, true))
-            | lower
           }}
 
     - name: Validate inputs
       ansible.builtin.assert:
         that:
           - cid is string
-          - target_state in ['red','green']
-        fail_msg: "Payload must include CID (string) and state in ['red','green']"
+          - target_state in ['Red-Light','Green-Light']
+        fail_msg: "Payload must include CID (string) and state in ['Red-Light','Green-Light']"
       register: _validated
 
     - name: Get one-page summary of devices
