@@ -146,6 +146,11 @@
         profileName: "{{ nd_full.ise_response.profileName | default(omit) }}"
         NetworkDeviceIPList: "{{ nd_full.ise_response.NetworkDeviceIPList | default(omit) }}"
         NetworkDeviceGroupList: "{{ new_groups }}"
+        authenticationSettings: "{{ nd_full.ise_response.authenticationSettings | default(omit) }}"
+        tacacsSettings: "{{ nd_full.ise_response.tacacsSettings | default(omit) }}"
+        snmpSettings: "{{ nd_full.ise_response.snmpSettings | default(omit) }}"
+        trustsecsettings: "{{ nd_full.ise_response.trustsecsettings | default(omit) }}"
+        coaPort: "{{ nd_full.ise_response.coaPort | default(omit) }}"
       when: not already_desired
       register: nd_update
 
